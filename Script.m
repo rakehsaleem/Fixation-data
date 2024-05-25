@@ -1,0 +1,428 @@
+% ******************************************************************* %
+% *** Date: 05.14.2024                                            *** %
+% *** Author: Rakeh Saleem (rakeh@psu.edu)                        *** %
+% ***                                                             *** %
+% *** Licensed under the GNU General Public License v3.0          *** %
+% *** Script designed to analyze eye tracking data overlayed      *** %
+% *** on images to visualize where participants are looking.      *** % 
+% ***                                                             *** %
+% *** The script includes checks for the presence of resolution   *** %
+% *** data and valid participant selections, with warnings and    *** %
+% *** prompts as needed. Also, it employs debugging outputs to    *** %
+% *** monitor the processing of image IDs and dimension swapping. *** %
+% ***                                                             *** %
+% *** Formula:                                                    *** %
+% *** normalized = actual coordinate / total axis dimensions      *** %
+% ******************************************************************* %
+%% importing the data
+clc
+clear all
+close all
+
+% Specify the directory containing the images
+imageDir = 'C:\Users\mqs6680\Downloads\saliency-master\images1';
+
+% Load the data
+filename = 'DD2.tsv';
+opts = detectImportOptions(filename, 'FileType', 'text');
+data = readtable(filename, opts);
+
+% Removing NaN from data and unnecessary columns
+data = rmmissing(data);
+data.RecordingTimestamp = [];
+data.ComputerTimestamp = [];
+data.Sensor = [];
+
+% Get unique participants
+participants = unique(data.('ParticipantName'));
+
+% Initialize a structure for participants
+participantData = struct();
+
+% Get a list of all JPG files in the folder
+imageFiles = dir(fullfile(imageDir, '*.jpg'));
+
+% Define the IDs of images that need their dimensions swapped
+idsToSwap = {'002', '003', '004', '017', '018', '019', '024', '025', '026', '027', '028'};
+
+% Read resolutions and store in a map for quick lookup
+resolutions = containers.Map('KeyType', 'char', 'ValueType', 'any');
+for i = 1:length(imageFiles)
+    imagePath = fullfile(imageDir, imageFiles(i).name);
+    img = imread(imagePath);
+    resolution = [size(img, 1), size(img, 2)];  % [height, width]
+    
+    [~, imageID, ~] = fileparts(imageFiles(i).name);
+    
+    % Debugging output to check IDs
+    disp(['Processing image ID: ' imageID]);
+
+    % Check if this image ID is in the list of IDs to swap
+    if ismember(imageID, idsToSwap)
+        disp(['Swapping dimensions for image ID: ' imageID]);
+        resolution = resolution([2 1]);  % Swap the dimensions
+    end
+    
+    resolutions(imageID) = resolution;
+end
+
+% Loop over each participant
+for i = 1:length(participants)
+    participantName = participants{i};
+    currentParticipantData = data(strcmp(data.('ParticipantName'), participantName), :);
+
+    % Filter to keep only .jpg files and exclude .png files
+    jpgIndex = endsWith(currentParticipantData.('PresentedMediaName'), '.jpg');
+    pngIndex = endsWith(currentParticipantData.('PresentedMediaName'), '.png');
+    validMedia = jpgIndex & ~pngIndex;
+    currentParticipantData = currentParticipantData(validMedia, :);
+
+    % Get unique images for this participant
+    uniqueImages = unique(currentParticipantData.('PresentedMediaName'));
+
+    % Check and store data for each unique image
+    for j = 1:length(uniqueImages)
+        image = uniqueImages{j};
+        imageData = currentParticipantData(strcmp(currentParticipantData.('PresentedMediaName'), image), :);
+
+        % Extract image ID without extension
+        [~, imageID, ~] = fileparts(image);
+
+        % Ensure each image is stored under a valid field name
+        validImageName = matlab.lang.makeValidName(imageID);
+
+        % Store each image data along with resolution in the corresponding participant's structure
+        if isKey(resolutions, imageID)
+            resolution = resolutions(imageID);
+            imageData.ResolutionHeight = repmat(resolution(2), height(imageData), 1);
+            imageData.ResolutionWidth = repmat(resolution(1), height(imageData), 1);
+
+            % Calculate actual fixation coordinates
+            imageData.ActualFixationX = imageData.('FixationPointXN') .* imageData.('ResolutionWidth');
+            imageData.ActualFixationY = imageData.('FixationPointYN') .* imageData.('ResolutionHeight');
+
+            participantData.(matlab.lang.makeValidName(participantName)).(validImageName) = imageData;
+        else
+            warning('Resolution data for image %s is not available.', imageID);
+        end
+    end
+end
+
+%% Individual Fixation map (Overlay of Image and Fixation Data)
+% Get all participant names from the structure
+participantNames = fieldnames(participantData);
+
+% Prompt user to enter a participant name or choose from a list
+disp('Available participants:');
+disp(participantNames);
+selectedParticipant = input('Enter the name of the participant to plot (case-sensitive): ', 's');
+
+% Check if the entered participant name is valid
+if isfield(participantData, selectedParticipant)
+    % Get all images for the selected participant
+    imageNames = fieldnames(participantData.(selectedParticipant));
+    for j = 1:length(imageNames)
+        imageName = imageNames{j};
+        imageData = participantData.(selectedParticipant).(imageName);
+        
+        % Ensure data exists for plotting
+        if ~isempty(imageData)
+            actualFixationX = imageData.ActualFixationX;
+            actualFixationY = imageData.ActualFixationY;
+
+            % Read the image from the file
+            imagePath = fullfile('C:\Users\mqs6680\Downloads\saliency-master\images', strcat(imageName, '.jpg')); % Assumes image extension is jpg
+            img = imreadort(imagePath);
+
+            % Check if the image needs to be rotated (portrait orientation)
+            %if size(img, 1) > size(img, 2)
+            %    img = imrotate(img, -90);  % Rotate the image clockwise by 90 degrees
+            %    % Correctly swap and calculate new fixation points
+            %    tempX = actualFixationX;  % Temporary variable for swapping
+            %    actualFixationX = actualFixationY;  % New X is the old Y
+            %    actualFixationY = size(img, 1) - tempX + 1;  % New Y is adjusted based on the new image height
+            %end
+
+            % Create a scatter plot on top of the image
+            figure;  % Create a new figure for each image
+            imshow(img)%, 'InitialMagnification', 'fit');  % Display the image and fit it to the window
+            hold on;  % Hold on to overlay scatter plot on the image
+            scatter(actualFixationX, actualFixationY, 'filled', 'r');  % Red points
+            hold off;  % Release the hold to allow further plots to be displayed separately
+
+            title(sprintf('Fixation Points on Image for Participant: %s, Image: %s', selectedParticipant, imageName));
+            xlabel('Actual Fixation X (pixels)');
+            ylabel('Actual Fixation Y (pixels)');
+
+            % Explicitly set the axis limits to match the image dimensions
+            axis on;  % Turn on axis lines, optional
+            xlim([0 size(img, 2)]);  % Set x-axis limits based on image width
+            ylim([0 size(img, 1)]);  % Set y-axis limits based on image height
+        end
+    end
+else
+    fprintf('No data available for participant: %s\n', selectedParticipant);
+end
+
+%% Individual Fixation map (Binary map of the Fixation Data)
+% Get all participant names from the structure
+participantNames = fieldnames(participantData);
+
+% Prompt user to enter a participant name or choose from a list
+disp('Available participants:');
+disp(participantNames);
+selectedParticipant = input('Enter the name of the participant to plot (case-sensitive): ', 's');
+
+% Check if the entered participant name is valid
+if isfield(participantData, selectedParticipant)
+    % Get all images for the selected participant
+    imageNames = fieldnames(participantData.(selectedParticipant));
+    for j = 1:length(imageNames)
+        imageName = imageNames{j};
+        imageData = participantData.(selectedParticipant).(imageName);
+        
+        % Ensure data exists for plotting
+        if ~isempty(imageData)
+            actualFixationX = imageData.ActualFixationX;
+            actualFixationY = imageData.ActualFixationY;
+
+            % Read the image from the file
+            imagePath = fullfile('C:\Users\mqs6680\Downloads\saliency-master\images', strcat(imageName, '.jpg')); % Assumes image extension is jpg
+            img = imreadort(imagePath);
+            
+            % Initialize a binary map of zeros with the same dimensions as the image
+            binaryMap = zeros(size(img, 1), size(img, 2));
+
+            % Convert fixation points to indices
+            % Ensure coordinates are within image dimensions
+            indices = sub2ind(size(binaryMap), ...
+                              min(max(round(actualFixationY), 1), size(img, 1)), ...
+                              min(max(round(actualFixationX), 1), size(img, 2)));
+            binaryMap(indices) = 1;  % Set the locations of fixation to 1
+
+            % Define structuring element for dilation
+            se = strel('disk', 15);  % Change the size (5) to adjust dilation
+
+            % Dilate the binary map
+            dilatedMap = imdilate(binaryMap, se);
+
+            % Display the dilated binary map
+            figure;
+            imshow(dilatedMap, 'InitialMagnification', 'fit');
+            title(sprintf('Dilated binary Map of Fixation for Participant: %s, Image: %s', selectedParticipant, imageName));
+            colormap(gca, 'gray');  % Set colormap to grayscale for better visibility
+            colorbar;  % Optionally add a colorbar to indicate the presence of fixation points
+
+            % Explicitly set the axis limits to match the image dimensions
+            axis on;  % Turn on axis lines, optional
+            xlim([0 size(img, 2)]);  % Set x-axis limits based on image width
+            ylim([0 size(img, 1)]);  % Set y-axis limits based on image height
+        end
+    end
+else
+    fprintf('No data available for participant: %s\n', selectedParticipant);
+end
+
+%% All participants data
+clc
+clear all
+close all
+
+% Specify the directory containing the images
+imageDir = 'C:\Users\mqs6680\Downloads\saliency-master\images1';
+
+% Load the data
+filename = 'DD2.tsv';
+opts = detectImportOptions(filename, 'FileType', 'text');
+data = readtable(filename, opts);
+
+% Removing NaN from data and unnecessary columns
+data = rmmissing(data);
+data.RecordingTimestamp = [];
+data.ComputerTimestamp = [];
+data.Sensor = [];
+
+% Initialize a structure for participants
+participantData = struct();
+
+% Get a list of all JPG files in the folder
+imageFiles = dir(fullfile(imageDir, '*.jpg'));
+
+% Extracting image names from imageFiles
+allImageNames = {imageFiles.name};  % This collects all image filenames into a cell array
+
+% Define the IDs of images that need their dimensions swapped
+idsToSwap = {'002', '003', '004', '017', '018', '019', '024', '025', '026', '027', '028'};
+
+% Read resolutions and store in a map for quick lookup
+resolutions = containers.Map('KeyType', 'char', 'ValueType', 'any');
+for i = 1:length(imageFiles)
+    imagePath = fullfile(imageDir, imageFiles(i).name);
+    img = imread(imagePath);
+    resolution = [size(img, 1), size(img, 2)];  % [height, width]
+    
+    [~, imageID, ~] = fileparts(imageFiles(i).name);
+
+    % Debugging output to check IDs
+    disp(['Processing image ID: ' imageID]);
+
+    if ismember(imageID, idsToSwap)
+        disp(['Swapping dimensions for image ID: ' imageID]);
+        resolution = resolution([2 1]);  % Swap the dimensions
+    end
+    
+    resolutions(imageID) = resolution;
+    disp(['Added resolution for ' imageID]);  % Debugging output
+end
+
+% Accumulate fixation data for all participants per image
+imageFixationData = struct();
+for imageName = allImageNames
+    [~, imageID, ~] = fileparts(imageName{1});
+    validImageName = matlab.lang.makeValidName(imageID);
+
+    if isKey(resolutions, imageID)
+        resolution = resolutions(imageID);
+    else
+        warning(['No resolution data found for image ID: ' imageID]);
+        continue;  % Skip this image if no resolution data is found
+    end
+
+    imageFixationData.(validImageName).X = [];
+    imageFixationData.(validImageName).Y = [];
+
+    for participantName = unique(data.('ParticipantName'))'
+        participantName = participantName{1};  % Convert cell to string
+        currentParticipantData = data(strcmp(data.('ParticipantName'), participantName), :);
+        imageData = currentParticipantData(strcmp(currentParticipantData.('PresentedMediaName'), imageName{1}), :);
+
+        if ~isempty(imageData)
+            actualFixationX = imageData.('FixationPointXN') .* resolution(1);
+            actualFixationY = imageData.('FixationPointYN') .* resolution(2);
+
+            imageFixationData.(validImageName).X = [imageFixationData.(validImageName).X; actualFixationX];
+            imageFixationData.(validImageName).Y = [imageFixationData.(validImageName).Y; actualFixationY];
+        end
+    end
+end
+
+% Plot fixation data for each image
+for imageName = allImageNames
+    [~, imageID, ~] = fileparts(imageName{1});
+    validImageName = matlab.lang.makeValidName(imageID);
+    imgPath = fullfile(imageDir, imageName{1});
+    if exist(imgPath, 'file')
+        img = imreadort(imgPath);
+        figure;
+        imshow(img, 'InitialMagnification', 'fit');
+        hold on;
+        scatter(imageFixationData.(validImageName).X, imageFixationData.(validImageName).Y, 'filled', 'r');
+        hold off;
+        title(['Fixation Points on Image for all Participants: ' imageID]);
+        xlabel('Actual Fixation X (pixels)');
+        ylabel('Actual Fixation Y (pixels)');
+        axis on;
+        xlim([0 size(img, 2)]);
+        ylim([0 size(img, 1)]);
+    else
+        disp(['Image file not found: ' imgPath]);
+    end
+end
+
+%% Cumulative Fixation map of all Participants(Binary map of the Fixation Data)
+clc
+clear all
+close all
+
+% Get all participant names from the structure
+imageDir = 'C:\Users\mqs6680\Downloads\saliency-master\images1';
+outputDir = 'C:\Users\mqs6680\Downloads\saliency-master\output';  % Define output directory
+
+% Ensure output directory exists
+if ~exist(outputDir, 'dir')
+    mkdir(outputDir);
+end
+
+% Load the data
+filename = 'DD2.tsv';
+opts = detectImportOptions(filename, 'FileType', 'text');
+data = readtable(filename, opts);
+
+% Removing NaN from data and unnecessary columns
+data = rmmissing(data);
+data.RecordingTimestamp = [];
+data.ComputerTimestamp = [];
+data.Sensor = [];
+
+% Get a list of all JPG files in the folder
+imageFiles = dir(fullfile(imageDir, '*.jpg'));
+
+% Extracting image names from imageFiles
+allImageNames = {imageFiles.name};  % This collects all image filenames into a cell array
+
+% Define the IDs of images that need their dimensions swapped
+idsToSwap = {'001', '005', '006', '007', '008', '009','010', '011', '012', '013', ...
+    '014', '015', '016', '020', '021', '022', '023', '029', '030', '031', '032', '033'};
+
+% Loop through each image to accumulate fixation points and create a binary map
+for imageName = allImageNames
+    [~, imageID, ~] = fileparts(imageName{1});
+    validImageName = matlab.lang.makeValidName(imageID);
+    imagePath = fullfile(imageDir, imageName{1});
+    img = imread(imagePath);
+
+    % Check if this image ID needs its dimensions swapped
+    if ismember(imageID, idsToSwap)
+        img = permute(img, [2 1 3]);  % Swap the dimensions of the image
+    end
+
+    % Initialize a binary map of zeros with the same dimensions as the image
+    binaryMap = zeros(size(img, 1), size(img, 2));
+    
+    % Accumulate fixation data from all participants for this image
+    for participantName = unique(data.('ParticipantName'))'
+        participantName = participantName{1};  % Convert cell to string
+        currentParticipantData = data(strcmp(data.('ParticipantName'), participantName), :);
+        imageData = currentParticipantData(strcmp(currentParticipantData.('PresentedMediaName'), imageName{1}), :);
+        
+        if ~isempty(imageData)
+            actualFixationX = imageData.('FixationPointXN') .* size(img, 2);
+            actualFixationY = imageData.('FixationPointYN') .* size(img, 1);
+
+            % Convert fixation points to indices and update binary map
+            indices = sub2ind(size(binaryMap), ...
+                              min(max(round(actualFixationY), 1), size(img, 1)), ...
+                              min(max(round(actualFixationX), 1), size(img, 2)));
+            binaryMap(indices) = 1;  % Set the locations of fixation to 1
+        end
+    end
+
+    % Define structuring element for dilation
+    se = strel('disk', 25);  % Adjust the size to control the spread of dilation
+    
+    % Dilate the binary map
+    dilatedMap = imdilate(binaryMap, se);
+
+    % Apply Gaussian blur to the dilated map
+    blurredMap = imgaussfilt(double(dilatedMap), 29, 'FilterSize',151);  % The second parameter controls the degree of blurring
+
+    % Save the dilated binary map to a .mat file
+    matFileName = fullfile(outputDir, [imageID '_binary_map.mat']);
+    save(matFileName, 'blurredMap');
+
+    % Save the dilated binary map
+    outputFile = fullfile(outputDir, [imageID '_binary_map.jpg']);
+    imwrite(blurredMap, outputFile, 'jpg');
+
+    % Display the dilated binary map
+    %figure;
+    %imshow(dilatedMap, 'InitialMagnification', 'fit');
+    %title(['Binary Map of Fixation for all Participants on Image: ' imageID]);
+    %colormap(gca, 'gray');  % Set colormap to grayscale for better visibility
+    %colorbar;  % Optionally add a colorbar to indicate the presence of fixation points
+
+    % Explicitly set the axis limits to match the image dimensions
+    %axis on;  % Turn on axis lines, optional
+    %xlim([0 size(img, 2)]);  % Set x-axis limits based on image width
+    %ylim([0 size(img, 1)]);  % Set y-axis limits based on image height
+end
